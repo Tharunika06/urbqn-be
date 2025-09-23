@@ -1,7 +1,7 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Transaction = require('../models/Transaction');
 const Notification = require('../models/Notification');
-const Counter = require('../models/counter');
+const Counter = require('../models/Counter');
 const { emitNotification } = require('../utils/socketUtils');
 
 // Helper function for sequence generation

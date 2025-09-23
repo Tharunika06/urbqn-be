@@ -1,6 +1,6 @@
 // src/controllers/ownerController.js
 const Owner = require('../models/Owner');
-const Counter = require('../models/counter');
+const Counter = require('../models/Counter');
 const Notification = require('../models/Notification');
 
 // --- Helper: Generate Sequential ID ---
