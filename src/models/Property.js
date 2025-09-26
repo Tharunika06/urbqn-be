@@ -14,12 +14,12 @@ const PropertySchema = new mongoose.Schema({
   },
   
   // Photo metadata
-  photoInfo: {
-    originalName: { type: String },
-    mimeType: { type: String },
-    size: { type: Number }, // Size in bytes
-    uploadDate: { type: Date, default: Date.now }
-  },
+  // photoInfo: {
+  //   originalName: { type: String },
+  //   mimeType: { type: String },
+  //   size: { type: Number }, // Size in bytes
+  //   uploadDate: { type: Date, default: Date.now }
+  // },
 
   size: { 
     type: String,

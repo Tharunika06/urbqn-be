@@ -15,5 +15,5 @@ router.use('/profiles', require('./profileRoutes'));
 
 // ✅ Add this line
 router.use('/admin', require('./adminRoutes'));
-
+router.use('/favorites', require('./favorites'));
 module.exports = router;
