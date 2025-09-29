@@ -31,7 +31,10 @@ const transactionSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
-
+customerEmail: {
+  type: String,
+  default: null
+},
     // Transaction details
     amount: {
       type: Number,
@@ -39,7 +42,7 @@ const transactionSchema = new mongoose.Schema(
     },
     currency: {
       type: String,
-      default: 'inr',
+      default: 'dollar',
     },
 
     // Reference to property

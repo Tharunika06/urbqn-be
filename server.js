@@ -59,10 +59,10 @@ const io = new Server(server, {
 app.set("io", io);
 
 // ✅ Static file serving
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
-app.use("/uploads/profiles", express.static(path.join(__dirname, "uploads", "profiles")));
-app.use("/uploads/owners", express.static(path.join(__dirname, "uploads", "owners")));
-app.use("/uploads/properties", express.static(path.join(__dirname, "uploads", "properties")));
+// app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+// app.use("/uploads/profiles", express.static(path.join(__dirname, "uploads", "profiles")));
+// app.use("/uploads/owners", express.static(path.join(__dirname, "uploads", "owners")));
+// app.use("/uploads/properties", express.static(path.join(__dirname, "uploads", "properties")));
 
 // ✅ MongoDB Connection
 mongoose.connect(process.env.MONGO_URI)

@@ -95,13 +95,13 @@ exports.getPropertyWithOwner = async (req, res) => {
   }
 };
 
-// POST new property - UPDATED to handle base64 images
+// POST new property - SIMPLIFIED base64 handling
 exports.createProperty = async (req, res) => {
   try {
     const {
       name, type, price, rentPrice, salePrice, status,
       bedrooms, bath, size, floor, address, zip, country,
-      city, rating, ownerId, about, facility, photo // Added photo from request body
+      city, rating, ownerId, about, facility, photo
     } = req.body;
 
     console.log('Received property data:', {
@@ -111,6 +111,7 @@ exports.createProperty = async (req, res) => {
       photo: photo ? `Base64 data received (${photo.length} chars)` : 'No photo'
     });
 
+    // Validate required fields
     if (!name || !status || !ownerId) {
       return res.status(400).json({ error: 'Name, status, and ownerId are required' });
     }
@@ -150,16 +151,17 @@ exports.createProperty = async (req, res) => {
       }
     }
 
-    // Validate base64 image if provided
+    // Simple photo validation - just check if it exists and is a string
     let validatedPhoto = '';
-    if (photo) {
-      // Check if it's a valid base64 data URL
-      if (photo.startsWith('data:image/') && photo.includes('base64,')) {
+    if (photo && typeof photo === 'string' && photo.length > 0) {
+      // Accept any base64 string that looks valid
+      if (photo.startsWith('data:image/')) {
         validatedPhoto = photo;
-        console.log('Valid base64 image received');
+        console.log('✅ Valid base64 image received and will be saved');
       } else {
-        console.warn('Invalid image format received');
-        return res.status(400).json({ error: 'Invalid image format. Please upload a valid image.' });
+        console.warn('⚠️ Photo does not start with data:image/');
+        // Still save it, but log the warning
+        validatedPhoto = photo;
       }
     }
 
@@ -179,7 +181,7 @@ exports.createProperty = async (req, res) => {
       country,
       city,
       rating: rating ? parseFloat(rating) : 4.5,
-      photo: validatedPhoto, // Store base64 string directly
+      photo: validatedPhoto, // Store base64 string directly in database
       facility: facilitiesArray,
       about,
       ownerId: numericOwnerId,
@@ -187,7 +189,7 @@ exports.createProperty = async (req, res) => {
     });
 
     await newProperty.save();
-    console.log('Property saved successfully with ID:', newProperty._id);
+    console.log('✅ Property saved successfully with ID:', newProperty._id);
 
     // Update owner property count
     owner.propertyOwned = (owner.propertyOwned || 0) + 1;
@@ -213,7 +215,7 @@ exports.createProperty = async (req, res) => {
   }
 };
 
-// PUT update property - UPDATED to handle base64 images
+// PUT update property - SIMPLIFIED base64 handling
 exports.updateProperty = async (req, res) => {
   try {
     const property = await Property.findById(req.params.id);
@@ -223,7 +225,7 @@ exports.updateProperty = async (req, res) => {
     const {
       name, type, price, rentPrice, salePrice, status,
       bedrooms, bath, size, floor, address, zip, country,
-      city, rating, about, facility, photo // Added photo from request body
+      city, rating, about, facility, photo
     } = req.body;
 
     if (name) updateFields.name = name;
@@ -254,13 +256,10 @@ exports.updateProperty = async (req, res) => {
       }
     }
 
-    // Handle base64 photo update
-    if (photo) {
-      if (photo.startsWith('data:image/') && photo.includes('base64,')) {
-        updateFields.photo = photo;
-      } else {
-        return res.status(400).json({ error: 'Invalid image format' });
-      }
+    // Simple photo update - just save whatever base64 string is provided
+    if (photo && typeof photo === 'string' && photo.length > 0) {
+      updateFields.photo = photo;
+      console.log('✅ Photo updated, size:', photo.length);
     }
 
     const updatedProperty = await Property.findByIdAndUpdate(req.params.id, updateFields, { new: true });
