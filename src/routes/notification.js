@@ -3,26 +3,37 @@ const express = require("express");
 const router = express.Router();
 const notificationController = require("../controllers/notificationController");
 
-// ✅ Get all notifications (works for both admin & mobile)
-// Admin: GET /api/notifications
-// Mobile: GET /api/notifications?type=House
+// ========== ADMIN DASHBOARD ROUTES ==========
+// Get admin notifications (existing)
 router.get("/", notificationController.getNotifications);
 
-// ✅ Get unread count (NEW - for mobile app badge)
+// Get admin unread count (existing)
 router.get("/unread-count", notificationController.getUnreadCount);
 
-// ✅ Mark a single notification as read
-// IMPORTANT: Changed from PATCH to PUT to match mobile app
+// Mark notification as read (existing - works for both admin and mobile)
 router.put("/:id/read", notificationController.markAsRead);
-
-// Also keep PATCH for backward compatibility with admin dashboard
 router.patch("/:id/read", notificationController.markAsRead);
 
-// ✅ Delete single notification (NEW - for mobile app swipe-to-delete)
-// Must be BEFORE the DELETE "/" route to avoid route conflicts
-router.delete("/:id", notificationController.deleteNotification);
-
-// ✅ Clear all notifications (existing - for admin dashboard)
+// Clear all notifications (existing)
 router.delete("/", notificationController.clearAllNotifications);
+
+// Clear only admin notifications (new)
+router.delete("/admin/clear", notificationController.clearAdminNotifications);
+
+// ========== MOBILE APP ROUTES ==========
+// Get mobile notifications (new)
+router.get("/mobile", notificationController.getMobileNotifications);
+
+// Get mobile unread count (new)
+router.get("/mobile/unread-count", notificationController.getMobileUnreadCount);
+
+// Mark multiple notifications as read (new)
+router.post("/mobile/mark-read", notificationController.markMultipleAsRead);
+
+// Mark all mobile notifications as read (new)
+router.post("/mobile/mark-all-read", notificationController.markAllMobileAsRead);
+
+// Clear only mobile notifications (new)
+router.delete("/mobile/clear", notificationController.clearMobileNotifications);
 
 module.exports = router;

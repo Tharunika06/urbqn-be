@@ -2,7 +2,6 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Transaction = require('../models/Transaction');
 const Notification = require('../models/Notification');
 const Counter = require('../models/Counter');
-const Profile = require('../models/Profile'); // Changed from User to Profile
 const { emitNotification } = require('../utils/socketUtils');
 
 // Helper function for sequence generation
@@ -50,24 +49,11 @@ const saveTransaction = async (req, res) => {
     const sequenceNumber = await getNextSequenceValue('customTransactionId');
     const customId = `TNX#${String(sequenceNumber).padStart(3, '0')}`;
 
-    // Fetch user email from Profile table based on phone number
-    let customerEmail = null;
-    if (transactionDetails.customerPhone) {
-      const profile = await Profile.findOne({ phone: transactionDetails.customerPhone });
-      if (profile && profile.email) {
-        customerEmail = profile.email;
-        console.log(`Found email ${customerEmail} for phone ${transactionDetails.customerPhone}`);
-      } else {
-        console.log(`No profile found with phone ${transactionDetails.customerPhone}`);
-      }
-    }
-
     const newTransaction = new Transaction({
       customTransactionId: customId,
       stripePaymentId: transactionDetails.id,
       customerName: transactionDetails.customerName,
       customerPhone: transactionDetails.customerPhone,
-      customerEmail: customerEmail, // Add email field from profile
       amount: transactionDetails.amount,
       property: transactionDetails.property.id,
       ownerName: transactionDetails.ownerName,
@@ -154,7 +140,6 @@ const getAllCustomers = async (req, res) => {
           _id: "$customerPhone",
           name: { $first: "$customerName" },
           phone: { $first: "$customerPhone" },
-          email: { $first: "$customerEmail" }, // Use actual email from transaction
           lastTransaction: { $max: "$createdAt" },
           totalTransactions: { $sum: 1 },
           totalAmount: { $sum: "$amount" },
@@ -164,7 +149,7 @@ const getAllCustomers = async (req, res) => {
       },
       {
         $lookup: {
-          from: 'properties',
+          from: 'properties', // Make sure this matches your property collection name
           localField: 'lastProperty',
           foreignField: '_id',
           as: 'propertyInfo'
@@ -172,17 +157,11 @@ const getAllCustomers = async (req, res) => {
       },
       {
         $addFields: {
-          // Use email from transaction if exists, otherwise generate placeholder
           email: { 
-            $ifNull: [
-              "$email",
-              { 
-                $concat: [ 
-                  { $toLower: { $replaceAll: { input: "$name", find: " ", replacement: "." } } }, 
-                  "@example.com" 
-                ] 
-              }
-            ]
+            $concat: [ 
+              { $toLower: { $replaceAll: { input: "$name", find: " ", replacement: "." } } }, 
+              "@example.com" 
+            ] 
           },
           status: "Active",
           interestedProperties: { 
@@ -213,7 +192,7 @@ const getAllCustomers = async (req, res) => {
           totalAmount: 1,
           averageAmount: 1,
           ownerName: 1,
-          photo: null
+          photo: null // Will be handled by frontend with placeholder
         }
       },
       {
@@ -253,13 +232,6 @@ const getCustomerByPhone = async (req, res) => {
     // Get the most recent transaction for primary customer info
     const latestTransaction = customerTransactions[0];
     
-    // Get email from Profile table or use the one from transaction
-    let customerEmail = latestTransaction.customerEmail;
-    if (!customerEmail) {
-      const profile = await Profile.findOne({ phone: decodedPhone });
-      customerEmail = profile?.email || latestTransaction.customerName.toLowerCase().replace(/\s+/g, '.') + '@example.com';
-    }
-    
     // Calculate customer statistics
     const totalTransactions = customerTransactions.length;
     const totalAmount = customerTransactions.reduce((sum, t) => sum + t.amount, 0);
@@ -285,7 +257,7 @@ const getCustomerByPhone = async (req, res) => {
     const customerData = {
       name: latestTransaction.customerName,
       phone: decodedPhone,
-      email: customerEmail,
+      email: latestTransaction.customerName.toLowerCase().replace(/\s+/g, '.') + '@example.com',
       status: 'Active',
       address: latestTransaction.property?.location || 'Schoolstraat 161 5151 HH Drunen',
       totalTransactions,
@@ -300,7 +272,7 @@ const getCustomerByPhone = async (req, res) => {
         line1: propertyTypes.length > 0 ? propertyTypes.join(', ') : '3-4 bedrooms, 2-3 bathrooms',
         line2: 'Close to public transportation, good school district, backyard, modern kitchen'
       },
-      transactions: customerTransactions.slice(0, 10)
+      transactions: customerTransactions.slice(0, 10) // Return latest 10 transactions
     };
     
     console.log(`Customer data prepared for: ${customerData.name}`);
