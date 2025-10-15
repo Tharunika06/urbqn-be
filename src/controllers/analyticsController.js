@@ -4,7 +4,6 @@ const Transaction = require("../models/Transaction");
 const getMonthlySales = async (req, res) => {
   try {
     const year = new Date().getFullYear();
-
     const salesData = await Transaction.aggregate([
       {
         $match: {
@@ -56,7 +55,6 @@ const getWeeklySales = async (req, res) => {
     // If you only want to count 'sale' transactions, add a filter like: { type: "sale" }
     const matchFilter = {
       createdAt: { $gte: startOfWeek, $lt: endOfWeek }
-      // , type: "sale" // <-- uncomment if Transaction has a 'type' field
     };
 
     const sales = await Transaction.aggregate([

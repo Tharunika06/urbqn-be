@@ -1,7 +1,7 @@
 // controllers/propertyController.js
 const Property = require('../models/Property');
 const Owner = require('../models/Owner');
-const Notification = require('../models/Notification');
+const notificationController = require('./notificationController');
 const { cleanPrice, populateOwnerDetails } = require('../utils/propertyUtils');
 
 // ---------------- CONTROLLERS ----------------
@@ -95,39 +95,69 @@ exports.getPropertyWithOwner = async (req, res) => {
   }
 };
 
-// POST new property - SIMPLIFIED base64 handling
+// POST new property - FIXED NOTIFICATIONS
 exports.createProperty = async (req, res) => {
   try {
+    console.log('\n========== NEW PROPERTY REQUEST ==========');
+    console.log('📥 Timestamp:', new Date().toISOString());
+    
     const {
       name, type, price, rentPrice, salePrice, status,
       bedrooms, bath, size, floor, address, zip, country,
       city, rating, ownerId, about, facility, photo
     } = req.body;
 
-    console.log('Received property data:', {
-      name,
-      status,
-      ownerId,
-      photo: photo ? `Base64 data received (${photo.length} chars)` : 'No photo'
-    });
-
     // Validate required fields
-    if (!name || !status || !ownerId) {
-      return res.status(400).json({ error: 'Name, status, and ownerId are required' });
+    if (!name) {
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: 'Property name is required',
+        field: 'name'
+      });
+    }
+    if (!status) {
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: 'Property status is required',
+        field: 'status'
+      });
+    }
+    if (!ownerId) {
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: 'Owner ID is required',
+        field: 'ownerId'
+      });
     }
 
+    // Validate and parse ownerId
     const numericOwnerId = parseInt(ownerId);
     if (isNaN(numericOwnerId)) {
-      return res.status(400).json({ error: 'Invalid owner ID' });
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: 'Owner ID must be a valid number',
+        received: ownerId
+      });
     }
 
+    // Check if owner exists
     const owner = await Owner.findOne({ ownerId: numericOwnerId });
-    if (!owner) return res.status(404).json({ error: 'Owner not found' });
+    if (!owner) {
+      return res.status(404).json({ 
+        error: 'Owner not found',
+        message: `No owner found with ID: ${numericOwnerId}`
+      });
+    }
 
+    // Validate status
     const validStatuses = ['rent', 'sale', 'both'];
     const normalizedStatus = status.toLowerCase();
     if (!validStatuses.includes(normalizedStatus)) {
-      return res.status(400).json({ error: 'Invalid status. Must be one of: rent, sale, both' });
+      return res.status(400).json({ 
+        error: 'Validation failed',
+        message: `Status must be one of: ${validStatuses.join(', ')}`,
+        received: status
+      });
     }
 
     // Clean prices
@@ -137,7 +167,7 @@ exports.createProperty = async (req, res) => {
       salePrice: cleanPrice(salePrice)
     };
 
-    // Handle facilities array
+    // Handle facilities
     let facilitiesArray = [];
     if (facility) {
       if (typeof facility === 'string') {
@@ -151,22 +181,48 @@ exports.createProperty = async (req, res) => {
       }
     }
 
-    // Simple photo validation - just check if it exists and is a string
+    // Validate photo
     let validatedPhoto = '';
-    if (photo && typeof photo === 'string' && photo.length > 0) {
-      // Accept any base64 string that looks valid
-      if (photo.startsWith('data:image/')) {
-        validatedPhoto = photo;
-        console.log('✅ Valid base64 image received and will be saved');
-      } else {
-        console.warn('⚠️ Photo does not start with data:image/');
-        // Still save it, but log the warning
+    if (photo) {
+      if (typeof photo !== 'string') {
+        return res.status(400).json({ 
+          error: 'Invalid photo format',
+          message: 'Photo must be a base64 string',
+          received: typeof photo
+        });
+      }
+
+      if (photo.length > 0) {
+        if (!photo.startsWith('data:image/')) {
+          return res.status(400).json({ 
+            error: 'Invalid photo format',
+            message: 'Photo must start with "data:image/"',
+            received: photo.substring(0, 50)
+          });
+        }
+        if (!photo.includes('base64,')) {
+          return res.status(400).json({ 
+            error: 'Invalid photo format',
+            message: 'Photo must contain "base64," marker'
+          });
+        }
+        
+        const sizeInMB = Buffer.byteLength(photo, 'utf8') / (1024 * 1024);
+        if (sizeInMB > 15) {
+          return res.status(400).json({ 
+            error: 'Photo too large',
+            message: 'Photo size exceeds 15MB limit',
+            size: sizeInMB.toFixed(2) + ' MB'
+          });
+        }
+        
         validatedPhoto = photo;
       }
     }
 
-    const newProperty = new Property({
-      name,
+    // Create property object
+    const propertyData = {
+      name: name.trim(),
       type: type || 'Apartment',
       price: cleanedPrices.price,
       rentPrice: cleanedPrices.rentPrice,
@@ -174,48 +230,116 @@ exports.createProperty = async (req, res) => {
       status: normalizedStatus,
       bedrooms: bedrooms ? parseInt(bedrooms) : undefined,
       bath: bath ? parseInt(bath) : undefined,
-      size,
-      floor,
-      address,
-      zip,
-      country,
-      city,
+      size: size || undefined,
+      floor: floor || undefined,
+      address: address || undefined,
+      zip: zip || undefined,
+      country: country || undefined,
+      city: city || undefined,
       rating: rating ? parseFloat(rating) : 4.5,
-      photo: validatedPhoto, // Store base64 string directly in database
+      photo: validatedPhoto,
       facility: facilitiesArray,
-      about,
+      about: about || undefined,
       ownerId: numericOwnerId,
       ownerName: owner.name
-    });
+    };
 
+    // Save to database
+    const newProperty = new Property(propertyData);
     await newProperty.save();
-    console.log('✅ Property saved successfully with ID:', newProperty._id);
+    console.log('✅ Property saved successfully!');
 
     // Update owner property count
     owner.propertyOwned = (owner.propertyOwned || 0) + 1;
     await owner.save();
+    console.log('✅ Owner property count updated:', owner.propertyOwned);
 
-    // Create notification
-    const notification = new Notification({
-      type: "property",
-      message: `New property "${newProperty.name}" was added by ${owner.name}`,
-      relatedId: newProperty._id
-    });
-    await notification.save();
+    // ========== NOTIFICATIONS (FIXED) ==========
+    console.log('\n🔔 Creating notifications...');
+    try {
+      // 1. ADMIN NOTIFICATION (Always create, not conditional on req.user)
+      console.log('📢 Creating admin notification...');
+      await notificationController.createNotification({
+        userId: req.user?._id || null,
+        type: 'property_created',
+        target: 'admin',
+        title: 'New Property Created',
+        message: `New property "${newProperty.name}" was added by ${owner.name}`,
+        propertyName: newProperty.name,
+        propertyId: newProperty._id,
+        userName: owner.name,
+        relatedId: newProperty._id,
+      });
+      console.log('✅ Admin notification created');
 
+      // 2. MOBILE BROADCAST - Property Created (Generic)
+      console.log('📱 Broadcasting property creation to mobile users...');
+      await notificationController.broadcastNotification({
+        type: 'property_created',
+        propertyId: newProperty._id,
+        propertyName: newProperty.name,
+        userName: owner.name,
+        userImage: owner.photo || null,
+        metadata: {
+          propertyType: newProperty.type,
+          propertyStatus: newProperty.status,
+          propertyImage: newProperty.photo || null,
+          price: newProperty.price,
+          rentPrice: newProperty.rentPrice,
+          salePrice: newProperty.salePrice,
+        }
+      });
+      console.log('✅ Mobile broadcast notification sent');
+
+      // 3. MOBILE BROADCAST - Property Type Specific
+      if (newProperty.type) {
+        console.log(`📱 Broadcasting ${newProperty.type} notification...`);
+        await notificationController.broadcastNotification({
+          type: newProperty.type,
+          propertyId: newProperty._id,
+          propertyName: newProperty.name,
+          userName: owner.name,
+          userImage: owner.photo || null,
+          metadata: {
+            propertyType: newProperty.type,
+            propertyStatus: newProperty.status,
+            propertyImage: newProperty.photo || null,
+            price: newProperty.price,
+            rentPrice: newProperty.rentPrice,
+            salePrice: newProperty.salePrice,
+          }
+        });
+        console.log(`✅ ${newProperty.type} notification sent`);
+      }
+
+    } catch (notifError) {
+      console.error('❌ Notification creation failed:', notifError.message);
+      console.error('Stack:', notifError.stack);
+    }
+
+    // Populate owner details and return
     const propertyWithOwner = await populateOwnerDetails(newProperty);
-    res.status(201).json(propertyWithOwner);
+    
+    console.log('✅✅✅ PROPERTY CREATED SUCCESSFULLY! ✅✅✅\n');
+    
+    res.status(201).json({ 
+      success: true,
+      message: 'Property created successfully',
+      property: propertyWithOwner 
+    });
+    
   } catch (err) {
-    console.error('💥 Error adding property:', err);
+    console.error('\n💥 CRITICAL ERROR:', err.message);
+    console.error('Stack:', err.stack);
     res.status(500).json({ 
       error: 'Failed to add property', 
-      details: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      message: err.message,
+      name: err.name
     });
   }
 };
 
-// PUT update property - SIMPLIFIED base64 handling
+// PUT update property - FIXED NOTIFICATIONS
 exports.updateProperty = async (req, res) => {
   try {
     const property = await Property.findById(req.params.id);
@@ -256,29 +380,53 @@ exports.updateProperty = async (req, res) => {
       }
     }
 
-    // Simple photo update - just save whatever base64 string is provided
     if (photo && typeof photo === 'string' && photo.length > 0) {
-      updateFields.photo = photo;
-      console.log('✅ Photo updated, size:', photo.length);
+      if (photo.startsWith('data:image/') && photo.includes('base64,')) {
+        updateFields.photo = photo;
+      }
     }
 
-    const updatedProperty = await Property.findByIdAndUpdate(req.params.id, updateFields, { new: true });
+    const updatedProperty = await Property.findByIdAndUpdate(
+      req.params.id, 
+      updateFields, 
+      { new: true, runValidators: true }
+    );
+    
     const propertyWithOwner = await populateOwnerDetails(updatedProperty);
 
-    res.json(propertyWithOwner);
+    // Create admin notification
+    try {
+      console.log('📢 Creating property update notification...');
+      await notificationController.createNotification({
+        userId: req.user?._id || null,
+        type: 'property_updated',
+        target: 'admin',
+        title: 'Property Updated',
+        message: `Property "${updatedProperty.name}" was updated`,
+        propertyName: updatedProperty.name,
+        propertyId: updatedProperty._id,
+        relatedId: updatedProperty._id
+      });
+      console.log('✅ Property update notification created');
+    } catch (notifError) {
+      console.error('⚠️ Notification creation failed:', notifError.message);
+    }
+
+    res.json({ 
+      success: true,
+      property: propertyWithOwner 
+    });
   } catch (err) {
     console.error('Error updating property:', err);
     res.status(500).json({ error: 'Failed to update property', details: err.message });
   }
 };
 
-// DELETE property
+// DELETE property - FIXED NOTIFICATIONS
 exports.deleteProperty = async (req, res) => {
   try {
     const property = await Property.findById(req.params.id);
     if (!property) return res.status(404).json({ error: 'Property not found' });
-
-    // No need to delete physical files since we're storing base64 in DB
 
     const owner = await Owner.findOne({ ownerId: property.ownerId });
     if (owner && owner.propertyOwned > 0) {
@@ -288,14 +436,28 @@ exports.deleteProperty = async (req, res) => {
 
     await Property.findByIdAndDelete(req.params.id);
 
-    const notification = new Notification({
-      type: "property",
-      message: `Property "${property.name}" was deleted.`,
-      relatedId: property._id
-    });
-    await notification.save();
+    // Create admin notification
+    try {
+      console.log('📢 Creating property deletion notification...');
+      await notificationController.createNotification({
+        userId: req.user?._id || null,
+        type: 'property_deleted',
+        target: 'admin',
+        title: 'Property Deleted',
+        message: `Property "${property.name}" was deleted`,
+        propertyName: property.name,
+        propertyId: property._id,
+        relatedId: property._id,
+      });
+      console.log('✅ Property deletion notification created');
+    } catch (notifError) {
+      console.error('⚠️ Notification creation failed:', notifError.message);
+    }
 
-    res.json({ message: 'Property deleted successfully' });
+    res.json({ 
+      success: true,
+      message: 'Property deleted successfully',
+    });
   } catch (err) {
     console.error('Error deleting property:', err);
     res.status(500).json({ error: 'Failed to delete property' });

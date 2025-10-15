@@ -1,9 +1,8 @@
-// routes/favorites.js
 const express = require('express');
 const router = express.Router();
 const FavoriteController = require('../controllers/favoriteController');
 
-// Middleware for request logging (optional)
+// Request logger middleware
 const requestLogger = (req, res, next) => {
   console.log(`${req.method} ${req.originalUrl}`, {
     params: req.params,
@@ -13,7 +12,6 @@ const requestLogger = (req, res, next) => {
   next();
 };
 
-// Apply logging middleware to all routes
 router.use(requestLogger);
 
 // Validation middleware
@@ -28,15 +26,28 @@ const validateUserId = (req, res, next) => {
   next();
 };
 
-// Routes
-// GET /api/favorites/:userId - Get all favorites for a user
-router.get('/:userId', validateUserId, FavoriteController.getUserFavorites);
+// ⭐ NEW ROUTES - Must be BEFORE /:userId to avoid route conflicts
+// GET /api/favorites/popular/detailed/:limit - Get detailed popular properties with limit
+router.get('/popular/detailed/:limit', FavoriteController.getPopularPropertiesDetailed);
 
+// GET /api/favorites/popular/detailed - Get detailed popular properties (no limit)
+router.get('/popular/detailed', FavoriteController.getPopularPropertiesDetailed);
+
+// GET /api/favorites/popular/:limit - Get most favorited properties with limit
+router.get('/popular/:limit', FavoriteController.getPopularProperties);
+
+// GET /api/favorites/popular - Get most favorited properties (no limit)
+router.get('/popular', FavoriteController.getPopularProperties);
+
+// EXISTING ROUTES
 // GET /api/favorites/:userId/count - Get favorite count for a user
 router.get('/:userId/count', validateUserId, FavoriteController.getFavoriteCount);
 
 // GET /api/favorites/:userId/check/:propertyId - Check if property is favorited
 router.get('/:userId/check/:propertyId', validateUserId, FavoriteController.checkFavorite);
+
+// GET /api/favorites/:userId - Get all favorites for a user
+router.get('/:userId', validateUserId, FavoriteController.getUserFavorites);
 
 // POST /api/favorites - Add a property to favorites
 router.post('/', FavoriteController.addFavorite);
@@ -50,7 +61,7 @@ router.delete('/:userId/:propertyId', validateUserId, FavoriteController.removeF
 // DELETE /api/favorites/:userId - Remove all favorites for a user
 router.delete('/:userId', validateUserId, FavoriteController.removeAllFavorites);
 
-// Error handling middleware for this router
+// Error handling middleware
 router.use((error, req, res, next) => {
   console.error('Favorites route error:', error);
   res.status(500).json({
@@ -61,7 +72,3 @@ router.use((error, req, res, next) => {
 });
 
 module.exports = router;
-
-// Register this router in your main app.js file:
-// const favoriteRoutes = require('./routes/favorites');
-// app.use('/api/favorites', favoriteRoutes);

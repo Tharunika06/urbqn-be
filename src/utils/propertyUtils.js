@@ -1,6 +1,5 @@
 const Owner = require('../models/Owner');
 
-// Clean price input
 exports.cleanPrice = (priceInput) => {
   if (!priceInput) return null;
   if (typeof priceInput === 'number') return priceInput;
@@ -12,7 +11,6 @@ exports.cleanPrice = (priceInput) => {
   return null;
 };
 
-// Populate owner details for properties
 exports.populateOwnerDetails = async (properties) => {
   if (!Array.isArray(properties)) {
     if (properties.ownerId) {

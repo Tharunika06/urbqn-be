@@ -326,6 +326,122 @@ class FavoriteController {
       });
     }
   }
+
+  // GET /api/favorites/popular/:limit? - Get most favorited properties
+  static async getPopularProperties(req, res) {
+    try {
+      const limit = parseInt(req.params.limit) || 10; // Default to 10 properties
+
+      console.log(`Getting top ${limit} popular properties`); // Debug log
+
+      // Aggregate to count favorites per property
+      const popularProperties = await Favorite.aggregate([
+        {
+          $group: {
+            _id: '$propertyId',
+            favoriteCount: { $sum: 1 },
+            property: { $first: '$property' } // Get property details from first occurrence
+          }
+        },
+        {
+          $sort: { favoriteCount: -1 } // Sort by favorite count descending
+        },
+        {
+          $limit: limit
+        },
+        {
+          $project: {
+            _id: 0,
+            propertyId: '$_id',
+            favoriteCount: 1,
+            property: 1
+          }
+        }
+      ]);
+
+      console.log(`Found ${popularProperties.length} popular properties`); // Debug log
+
+      res.json({
+        success: true,
+        properties: popularProperties,
+        count: popularProperties.length
+      });
+    } catch (error) {
+      console.error('Error fetching popular properties:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to fetch popular properties',
+        error: error.message
+      });
+    }
+  }
+
+  // GET /api/favorites/popular/detailed/:limit? - Get detailed popular properties
+  static async getPopularPropertiesDetailed(req, res) {
+    try {
+      const limit = parseInt(req.params.limit) || 10;
+      const minFavorites = parseInt(req.query.minFavorites) || 1; // Optional: minimum favorites filter
+
+      console.log(`Getting popular properties (limit: ${limit}, minFavorites: ${minFavorites})`);
+
+      const popularProperties = await Favorite.aggregate([
+        {
+          $group: {
+            _id: '$propertyId',
+            favoriteCount: { $sum: 1 },
+            property: { $first: '$property' },
+            favoritedBy: { $push: '$userId' } // Track which users favorited it
+          }
+        },
+        {
+          $match: {
+            favoriteCount: { $gte: minFavorites }
+          }
+        },
+        {
+          $sort: { favoriteCount: -1, _id: 1 } // Secondary sort by ID for consistency
+        },
+        {
+          $limit: limit
+        },
+        {
+          $project: {
+            _id: 0,
+            propertyId: '$_id',
+            favoriteCount: 1,
+            property: 1,
+            userCount: { $size: '$favoritedBy' }
+            // Optionally include favoritedBy if you need to show user info
+          }
+        }
+      ]);
+
+      res.json({
+        success: true,
+        properties: popularProperties,
+        count: popularProperties.length,
+        totalFavorites: popularProperties.reduce((sum, p) => sum + p.favoriteCount, 0)
+      });
+    } catch (error) {
+      console.error('Error fetching popular properties:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to fetch popular properties',
+        error: error.message
+      });
+    }
+  }
 }
 
-module.exports = FavoriteController;
+// ✅ CORRECT MODULE EXPORTS
+module.exports = {
+  getUserFavorites: FavoriteController.getUserFavorites,
+  addFavorite: FavoriteController.addFavorite,
+  removeFavorite: FavoriteController.removeFavorite,
+  removeAllFavorites: FavoriteController.removeAllFavorites,
+  getFavoriteCount: FavoriteController.getFavoriteCount,
+  bulkAddFavorites: FavoriteController.bulkAddFavorites,
+  checkFavorite: FavoriteController.checkFavorite,
+  getPopularProperties: FavoriteController.getPopularProperties,
+  getPopularPropertiesDetailed: FavoriteController.getPopularPropertiesDetailed
+};
