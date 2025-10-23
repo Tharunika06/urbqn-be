@@ -15,7 +15,8 @@ router.delete("/admin/clear", notificationController.clearAdminNotifications);
 // Get admin notifications (less specific)
 router.get("/", notificationController.getNotifications);
 
-// ========== MOBILE APP ROUTES ==========
+// ========== MOBILE APP ROUTES (USER-SPECIFIC) ==========
+
 // Get mobile unread count (specific route first)
 router.get("/mobile/unread-count", notificationController.getMobileUnreadCount);
 
@@ -25,21 +26,30 @@ router.post("/mobile/mark-read", notificationController.markMultipleAsRead);
 // Mark all mobile notifications as read (specific route)
 router.post("/mobile/mark-all-read", notificationController.markAllMobileAsRead);
 
-// Clear only mobile notifications (specific route)
+// ========== NEW: USER-SPECIFIC SOFT DELETE ROUTES ==========
+// Clear all notifications for specific user (soft delete)
+router.post("/mobile/clear-for-user", notificationController.clearAllNotificationsForUser);
+
+// Soft delete notification for specific user
+router.post("/mobile/:id/delete-for-user", notificationController.deleteNotificationForUser);
+
+// ========== ADMIN ROUTES (HARD DELETE) ==========
+// Clear only mobile notifications (HARD DELETE - Admin only)
 router.delete("/mobile/clear", notificationController.clearMobileNotifications);
 
-// Hide notification from mobile (specific with ID parameter)
+// Hide notification from mobile (deprecated)
 router.delete("/mobile/:id", notificationController.hideNotificationFromMobile);
 
 // Get mobile notifications (less specific)
 router.get("/mobile", notificationController.getMobileNotifications);
 
 // ========== SHARED ROUTES (Admin & Mobile) ==========
+
 // Mark notification as read (supports both PUT and PATCH)
 router.put("/:id/read", notificationController.markAsRead);
 router.patch("/:id/read", notificationController.markAsRead);
 
-// Delete single notification permanently
+// Delete single notification permanently (HARD DELETE - Admin only)
 router.delete("/:id", notificationController.deleteNotification);
 
 // Clear all notifications (MUST be last - catches DELETE /)

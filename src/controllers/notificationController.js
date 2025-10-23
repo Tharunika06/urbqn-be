@@ -21,7 +21,7 @@ const NOTIFICATION_TARGETS = {
 const determineTarget = (type) => {
   if (NOTIFICATION_TARGETS.ADMIN_ONLY.includes(type)) return 'admin';
   if (NOTIFICATION_TARGETS.MOBILE_ONLY.includes(type)) return 'mobile';
-  return 'admin'; // Default to admin for unknown types
+  return 'admin';
 };
 
 // Helper function to generate mobile-friendly messages
@@ -29,7 +29,6 @@ const generateMobileMessage = (payload) => {
   const { type, propertyName, userName } = payload;
   
   const messages = {
-    // Property notifications
     'property_created': `New Property Added! ${propertyName || 'A new property'} is now available. Check it out! 🏠`,
     'House': `New House Listed! ${propertyName || 'A beautiful house'} has been added. Take a look! 🏡`,
     'Villa': `New Villa Added! ${propertyName || 'A luxury villa'} is now available for viewing. ✨`,
@@ -37,7 +36,6 @@ const generateMobileMessage = (payload) => {
     'Apartment': `New Apartment Available! ${propertyName || 'An apartment'} has been added to listings. 🏢`,
     'Commercial': `New Commercial Property! ${propertyName || 'A commercial space'} is now listed. 🏪`,
     'Land': `New Land Listing! ${propertyName || 'A plot of land'} has been added. Explore now! 🌳`,
-    // Owner notifications
     'owner': `New Property Owner! ${userName || 'A new owner'} has joined. Welcome to the community! 🎉`
   };
   
@@ -67,24 +65,20 @@ exports.createNotification = async (payload) => {
   try {
     console.log('📢 Creating notification:', payload.type, 'for target:', payload.target);
     
-    // Determine target if not provided
     if (!payload.target && payload.type) {
       payload.target = determineTarget(payload.type);
     }
     
-    // Generate mobile-friendly content for mobile notifications
     if (payload.target === 'mobile') {
       if (!payload.message) {
         payload.message = generateMobileMessage(payload);
       }
       
-      // Set title if not provided
       if (!payload.title) {
         payload.title = generateTitle(payload.type);
       }
     }
     
-    // Set time if not provided
     if (!payload.time) {
       payload.time = new Date();
     }
@@ -105,26 +99,22 @@ exports.broadcastNotification = async (payload) => {
   try {
     console.log('📱 Broadcasting notification to mobile users:', payload.type);
     
-    // Force target to mobile
     payload.target = 'mobile';
     
-    // Generate mobile-friendly message
     if (!payload.message) {
       payload.message = generateMobileMessage(payload);
     }
     
-    // Set title if not provided
     if (!payload.title) {
       payload.title = generateTitle(payload.type);
     }
     
-    // Set time if not provided
     if (!payload.time) {
       payload.time = new Date();
     }
 
-    // Initialize readBy as empty array (no one has read it yet)
     payload.readBy = [];
+    payload.deletedBy = []; // NEW: Initialize empty deletedBy array
     payload.totalReads = 0;
 
     const notif = new Notification(payload);
@@ -196,12 +186,11 @@ exports.clearAdminNotifications = async (req, res) => {
   }
 };
 
-// ========== MOBILE APP ENDPOINTS (UPDATED FOR USER-SPECIFIC READS) ==========
+// ========== MOBILE APP ENDPOINTS (USER-SPECIFIC) ==========
 
-// Get notifications for MOBILE app (USER-SPECIFIC)
+// Get notifications for MOBILE app (USER-SPECIFIC, excluding deleted)
 exports.getMobileNotifications = async (req, res) => {
   try {
-    // Get userId from query params or auth middleware
     const userId = req.query.userId || req.user?._id;
     
     if (!userId) {
@@ -213,11 +202,12 @@ exports.getMobileNotifications = async (req, res) => {
 
     console.log(`📱 Fetching mobile notifications for user: ${userId}`);
     
-    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // 7 days
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     
     const notifs = await Notification.find({ 
       time: { $gte: cutoff },
       target: 'mobile',
+      deletedBy: { $nin: [userId] }, // ← NEW: Exclude deleted by this user
       'metadata.hiddenFromMobile': { $ne: true }
     })
       .sort({ time: -1 })
@@ -226,7 +216,6 @@ exports.getMobileNotifications = async (req, res) => {
       .populate('userId', 'name profileImage')
       .lean();
     
-    // Format notifications and add isReadByUser flag
     const formattedNotifs = notifs.map(notif => ({
       _id: notif._id,
       type: notif.type,
@@ -238,7 +227,7 @@ exports.getMobileNotifications = async (req, res) => {
       propertyName: notif.propertyName || notif.propertyId?.name,
       propertyImage: notif.propertyId?.images?.[0],
       time: notif.time,
-      isRead: notif.readBy?.some(id => id.toString() === userId.toString()) || false, // ← USER-SPECIFIC
+      isRead: notif.readBy?.some(id => id.toString() === userId.toString()) || false,
       totalReads: notif.totalReads || 0,
       metadata: notif.metadata
     }));
@@ -251,10 +240,9 @@ exports.getMobileNotifications = async (req, res) => {
   }
 };
 
-// Get unread count for MOBILE (USER-SPECIFIC)
+// Get unread count for MOBILE (USER-SPECIFIC, excluding deleted)
 exports.getMobileUnreadCount = async (req, res) => {
   try {
-    // Get userId from query params or auth middleware
     const userId = req.query.userId || req.user?._id;
     
     if (!userId) {
@@ -266,7 +254,8 @@ exports.getMobileUnreadCount = async (req, res) => {
 
     const count = await Notification.countDocuments({ 
       target: 'mobile',
-      readBy: { $nin: [userId] }, // ← Not in readBy array
+      readBy: { $nin: [userId] },
+      deletedBy: { $nin: [userId] }, // ← NEW: Exclude deleted
       'metadata.hiddenFromMobile': { $ne: true }
     });
     
@@ -281,7 +270,7 @@ exports.getMobileUnreadCount = async (req, res) => {
 // Mark single notification as read (USER-SPECIFIC)
 exports.markAsRead = async (req, res) => {
   try {
-    const { userId } = req.body; // Get userId from request body
+    const { userId } = req.body;
     const notificationId = req.params.id;
 
     if (!userId) {
@@ -297,9 +286,7 @@ exports.markAsRead = async (req, res) => {
       return res.status(404).json({ error: "Notification not found" });
     }
 
-    // If it's a mobile notification, use user-specific read tracking
     if (notification.target === 'mobile') {
-      // Add user to readBy array if not already there
       if (!notification.readBy.includes(userId)) {
         notification.readBy.push(userId);
         notification.totalReads = (notification.totalReads || 0) + 1;
@@ -309,7 +296,6 @@ exports.markAsRead = async (req, res) => {
         console.log(`ℹ️ User ${userId} already read notification ${notificationId}`);
       }
     } else {
-      // For admin notifications, use the old isRead flag
       notification.isRead = true;
       await notification.save();
       console.log(`✅ Marked admin notification ${notificationId} as read`);
@@ -342,15 +328,14 @@ exports.markMultipleAsRead = async (req, res) => {
       });
     }
     
-    // Update multiple notifications - add user to readBy array
     await Notification.updateMany(
       { 
         _id: { $in: notificationIds },
         target: 'mobile',
-        readBy: { $nin: [userId] } // Only update if user hasn't read yet
+        readBy: { $nin: [userId] }
       },
       { 
-        $addToSet: { readBy: userId }, // Add to array (no duplicates)
+        $addToSet: { readBy: userId },
         $inc: { totalReads: 1 }
       }
     );
@@ -378,7 +363,8 @@ exports.markAllMobileAsRead = async (req, res) => {
     const result = await Notification.updateMany(
       { 
         target: 'mobile',
-        readBy: { $nin: [userId] } // Only unread notifications
+        readBy: { $nin: [userId] },
+        deletedBy: { $nin: [userId] } // ← NEW: Don't mark deleted ones
       },
       { 
         $addToSet: { readBy: userId },
@@ -398,17 +384,95 @@ exports.markAllMobileAsRead = async (req, res) => {
   }
 };
 
-// Clear mobile notifications only
+// ========== NEW: USER-SPECIFIC SOFT DELETE ==========
+
+// Soft delete notification for specific user
+exports.deleteNotificationForUser = async (req, res) => {
+  try {
+    const { userId } = req.body;
+    const notificationId = req.params.id;
+
+    if (!userId) {
+      return res.status(400).json({ 
+        error: "User ID is required",
+        message: "Please provide userId in request body"
+      });
+    }
+
+    const notification = await Notification.findById(notificationId);
+    
+    if (!notification) {
+      return res.status(404).json({ error: "Notification not found" });
+    }
+
+    // Add user to deletedBy array if not already there
+    if (!notification.deletedBy.includes(userId)) {
+      notification.deletedBy.push(userId);
+      await notification.save();
+      console.log(`🗑️ User ${userId} soft-deleted notification ${notificationId}`);
+    } else {
+      console.log(`ℹ️ User ${userId} already deleted notification ${notificationId}`);
+    }
+    
+    res.json({ 
+      success: true, 
+      message: "Notification deleted for user",
+      notification
+    });
+  } catch (err) {
+    console.error("Delete notification for user error:", err.message);
+    res.status(500).json({ error: "Failed to delete notification" });
+  }
+};
+
+// Clear all mobile notifications for specific user (soft delete)
+exports.clearAllNotificationsForUser = async (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ 
+        error: "User ID is required",
+        message: "Please provide userId in request body"
+      });
+    }
+
+    // Find all mobile notifications not already deleted by this user
+    const result = await Notification.updateMany(
+      { 
+        target: 'mobile',
+        deletedBy: { $nin: [userId] }
+      },
+      { 
+        $addToSet: { deletedBy: userId }
+      }
+    );
+    
+    console.log(`🗑️ User ${userId} soft-deleted ${result.modifiedCount} mobile notifications`);
+    res.json({ 
+      success: true, 
+      message: "All notifications cleared for user",
+      modifiedCount: result.modifiedCount
+    });
+  } catch (err) {
+    console.error("Clear all notifications for user error:", err.message);
+    res.status(500).json({ error: "Failed to clear notifications" });
+  }
+};
+
+// ========== ADMIN ENDPOINTS (Hard Delete) ==========
+
+// Clear mobile notifications only (HARD DELETE - Admin only)
 exports.clearMobileNotifications = async (req, res) => {
   try {
     const result = await Notification.deleteMany({
       target: 'mobile'
     });
     
-    console.log(`🗑️ Cleared ${result.deletedCount} mobile notifications`);
+    console.log(`🗑️ Cleared ${result.deletedCount} mobile notifications (HARD DELETE)`);
     res.json({ 
       success: true, 
-      message: "Mobile notifications cleared",
+      message: "Mobile notifications cleared permanently",
       deletedCount: result.deletedCount
     });
   } catch (err) {
@@ -417,7 +481,45 @@ exports.clearMobileNotifications = async (req, res) => {
   }
 };
 
-// Hide notification from mobile (soft delete - USER-SPECIFIC)
+// Delete notification permanently (HARD DELETE - Admin only)
+exports.deleteNotification = async (req, res) => {
+  try {
+    const notification = await Notification.findByIdAndDelete(req.params.id);
+    
+    if (!notification) {
+      return res.status(404).json({ error: "Notification not found" });
+    }
+    
+    console.log(`🗑️ Deleted notification ${req.params.id} permanently (HARD DELETE)`);
+    res.json({ 
+      success: true, 
+      message: "Notification deleted permanently",
+      deletedNotification: notification
+    });
+  } catch (err) {
+    console.error("Delete notification error:", err.message);
+    res.status(500).json({ error: "Failed to delete notification" });
+  }
+};
+
+// Clear all notifications (HARD DELETE - Admin only)
+exports.clearAllNotifications = async (req, res) => {
+  try {
+    const result = await Notification.deleteMany({});
+    
+    console.log(`🗑️ Cleared ALL ${result.deletedCount} notifications (HARD DELETE)`);
+    res.json({ 
+      success: true, 
+      message: "All notifications cleared permanently",
+      deletedCount: result.deletedCount
+    });
+  } catch (err) {
+    console.error("Clear all notifications error:", err.message);
+    res.status(500).json({ error: "Failed to clear notifications" });
+  }
+};
+
+// Hide notification from mobile (soft delete - DEPRECATED, use deleteNotificationForUser instead)
 exports.hideNotificationFromMobile = async (req, res) => {
   try {
     const { userId } = req.body;
@@ -452,45 +554,5 @@ exports.hideNotificationFromMobile = async (req, res) => {
   } catch (err) {
     console.error("Hide notification from mobile error:", err.message);
     res.status(500).json({ error: "Failed to hide notification" });
-  }
-};
-
-// ========== SHARED ENDPOINTS ==========
-
-// Delete notification permanently
-exports.deleteNotification = async (req, res) => {
-  try {
-    const notification = await Notification.findByIdAndDelete(req.params.id);
-    
-    if (!notification) {
-      return res.status(404).json({ error: "Notification not found" });
-    }
-    
-    console.log(`🗑️ Deleted notification ${req.params.id} permanently`);
-    res.json({ 
-      success: true, 
-      message: "Notification deleted permanently",
-      deletedNotification: notification
-    });
-  } catch (err) {
-    console.error("Delete notification error:", err.message);
-    res.status(500).json({ error: "Failed to delete notification" });
-  }
-};
-
-// Clear all notifications (both admin and mobile)
-exports.clearAllNotifications = async (req, res) => {
-  try {
-    const result = await Notification.deleteMany({});
-    
-    console.log(`🗑️ Cleared ALL ${result.deletedCount} notifications`);
-    res.json({ 
-      success: true, 
-      message: "All notifications cleared",
-      deletedCount: result.deletedCount
-    });
-  } catch (err) {
-    console.error("Clear all notifications error:", err.message);
-    res.status(500).json({ error: "Failed to clear notifications" });
   }
 };
