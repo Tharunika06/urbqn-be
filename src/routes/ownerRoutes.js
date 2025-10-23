@@ -11,6 +11,10 @@ router.get('/stats/photos', ownerController.getPhotoStats);
 // Get owners without photos (for debugging/migration)
 router.get('/utils/no-photos', ownerController.getOwnersWithoutPhotos);
 
+// Recalculate ALL owner stats (admin utility)
+// Usage: POST /owners/utils/recalculate-all
+router.post('/utils/recalculate-all', ownerController.recalculateAllStats);
+
 // --- Main Owner Routes ---
 
 // Get all owners (with optional photo exclusion for performance)
@@ -39,5 +43,11 @@ router.patch('/:ownerId/photo', ownerController.updateOwnerPhoto);
 
 // Remove owner photo
 router.delete('/:ownerId/photo', ownerController.removeOwnerPhoto);
+
+// --- Stats Recalculation Routes ---
+
+// Recalculate stats for a single owner (utility endpoint)
+// Usage: POST /owners/:ownerId/recalculate-stats
+router.post('/:ownerId/recalculate-stats', ownerController.recalculateStats);
 
 module.exports = router;

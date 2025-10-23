@@ -1,5 +1,6 @@
 // src/controllers/ownerController.js
 const Owner = require('../models/Owner');
+const Property = require('../models/Property');
 const Counter = require('../models/Counter');
 const Notification = require('../models/Notification');
 const { emitNotification } = require('../utils/socketUtils');
@@ -12,6 +13,45 @@ async function getNextSequenceValue(sequenceName) {
     { new: true, upsert: true }
   );
   return sequenceDocument.seq;
+}
+
+// --- Helper: Recalculate Owner Stats from Properties ---
+async function recalculateOwnerStats(ownerId) {
+  try {
+    const owner = await Owner.findOne({ ownerId });
+    if (!owner) return null;
+
+    const numericOwnerId = parseInt(ownerId);
+
+    const rentProperties = await Property.countDocuments({ 
+      ownerId: numericOwnerId, 
+      status: { $in: ['rent', 'both'] } 
+    });
+    
+    const saleProperties = await Property.countDocuments({ 
+      ownerId: numericOwnerId, 
+      status: { $in: ['sale', 'both'] } 
+    });
+
+    const totalProperties = await Property.countDocuments({ 
+      ownerId: numericOwnerId 
+    });
+
+    owner.propertyRent = rentProperties;
+    owner.propertySold = saleProperties;
+    owner.propertyOwned = totalProperties;
+    owner.totalListing = rentProperties + saleProperties;
+
+    await owner.save();
+    
+    console.log(`✅ Owner stats recalculated for ${owner.name}:`);
+    console.log(`   Total: ${totalProperties} | Rent: ${rentProperties} | Sale: ${saleProperties}`);
+
+    return owner;
+  } catch (error) {
+    console.error('❌ Error recalculating owner stats:', error.message);
+    return null;
+  }
 }
 
 // --- Utility Controllers ---
@@ -58,6 +98,69 @@ const getOwnersWithoutPhotos = async (req, res) => {
   }
 };
 
+// Recalculate stats for single owner
+const recalculateStats = async (req, res) => {
+  try {
+    const { ownerId } = req.params;
+    console.log(`🔄 Recalculating stats for owner: ${ownerId}`);
+
+    const owner = await recalculateOwnerStats(ownerId);
+    
+    if (!owner) {
+      return res.status(404).json({ error: 'Owner not found' });
+    }
+
+    res.status(200).json({
+      message: 'Owner stats recalculated successfully',
+      owner: {
+        ownerId: owner.ownerId,
+        name: owner.name,
+        propertyOwned: owner.propertyOwned,
+        propertyRent: owner.propertyRent,
+        propertySold: owner.propertySold,
+        totalListing: owner.totalListing
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error recalculating stats:', error);
+    res.status(500).json({ error: 'Failed to recalculate owner stats' });
+  }
+};
+
+// Recalculate stats for all owners
+const recalculateAllStats = async (req, res) => {
+  try {
+    console.log('🔄 Recalculating stats for all owners...');
+
+    const owners = await Owner.find();
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const owner of owners) {
+      const result = await recalculateOwnerStats(owner.ownerId);
+      if (result) {
+        successCount++;
+      } else {
+        errorCount++;
+      }
+    }
+
+    console.log(`✅ Recalculation complete: ${successCount} success, ${errorCount} errors`);
+
+    res.status(200).json({
+      message: 'All owner stats recalculated',
+      total: owners.length,
+      success: successCount,
+      errors: errorCount
+    });
+
+  } catch (error) {
+    console.error('❌ Error recalculating all stats:', error);
+    res.status(500).json({ error: 'Failed to recalculate all owner stats' });
+  }
+};
+
 // --- Main Controller Functions ---
 
 // Add new owner
@@ -66,7 +169,6 @@ const addOwner = async (req, res) => {
     const {
       name, email, contact, address, doj, status, city,
       agency, licenseNumber, textNumber, servicesArea, about,
-      propertySold, propertyRent,
       photo,
       photoInfo
     } = req.body;
@@ -110,15 +212,11 @@ const addOwner = async (req, res) => {
       }
     }
 
-    // Parse numbers safely
-    const sold = parseInt(propertySold) || 0;
-    const rent = parseInt(propertyRent) || 0;
-    const totalListing = sold + rent;
-
     // Generate next sequential ownerId
     const nextOwnerId = await getNextSequenceValue('ownerId');
 
     // Create Owner with base64 photo
+    // NOTE: Property stats will be 0 initially and auto-calculated when properties are added
     const newOwner = new Owner({
       name,
       ownerId: nextOwnerId.toString(),
@@ -138,9 +236,11 @@ const addOwner = async (req, res) => {
         uploadDate: new Date(),
         size: Buffer.byteLength(photo, 'utf8')
       },
-      propertySold: sold,
-      propertyRent: rent,
-      totalListing
+      // Stats will be auto-calculated from properties
+      propertySold: 0,
+      propertyRent: 0,
+      propertyOwned: 0,
+      totalListing: 0
     });
 
     await newOwner.save();
@@ -148,12 +248,12 @@ const addOwner = async (req, res) => {
     console.log(`✅ Owner created with ID: ${newOwner.ownerId}`);
     console.log(`📸 Photo stored as base64 (${photo.length} characters)`);
 
-    // Create notification for new owner - FIXED
+    // Create notification for new owner
     try {
       const notification = new Notification({
         userId: null,
-        type: "owner_added", // FIXED - use valid enum value
-        target: "admin", // ADDED - required field
+        type: "owner_added",
+        target: "admin",
         message: `New owner "${newOwner.name}" has been added.`,
         relatedId: newOwner._id
       });
@@ -170,12 +270,10 @@ const addOwner = async (req, res) => {
           name: newOwner.name
         });
 
-        // Also emit notification via socket
         emitNotification(req, notification);
       }
     } catch (notifError) {
       console.error('⚠️ Notification creation failed (non-critical):', notifError.message);
-      // Don't fail the owner creation if notification fails
     }
 
     res.status(201).json({
@@ -246,6 +344,7 @@ const getOwnerById = async (req, res) => {
 
     console.log(`✅ Owner found: ${owner.name}`);
     console.log(`📸 Has photo: ${!!owner.photo}`);
+    console.log(`📊 Stats: Owned=${owner.propertyOwned}, Rent=${owner.propertyRent}, Sale=${owner.propertySold}`);
 
     res.status(200).json({
       ...owner.toObject(),
@@ -273,7 +372,6 @@ const updateOwner = async (req, res) => {
     const {
       name, email, contact, address, doj, status, city,
       agency, licenseNumber, textNumber, servicesArea, about,
-      propertySold, propertyRent,
       photo,
       photoInfo
     } = req.body;
@@ -298,9 +396,8 @@ const updateOwner = async (req, res) => {
       }
     }
 
-    const sold = parseInt(propertySold) || owner.propertySold || 0;
-    const rent = parseInt(propertyRent) || owner.propertyRent || 0;
-    const totalListing = sold + rent;
+    // NOTE: We DO NOT update property stats manually
+    // They will be auto-calculated by the property controller
 
     const updateData = {
       name: name || owner.name,
@@ -314,10 +411,7 @@ const updateOwner = async (req, res) => {
       licenseNumber: licenseNumber || owner.licenseNumber,
       textNumber: textNumber || owner.textNumber,
       servicesArea: servicesArea || owner.servicesArea,
-      about: about || owner.about,
-      propertySold: sold,
-      propertyRent: rent,
-      totalListing
+      about: about || owner.about
     };
 
     // Handle photo update
@@ -345,12 +439,12 @@ const updateOwner = async (req, res) => {
 
     console.log(`✅ Owner updated: ${ownerId}`);
 
-    // Create notification for owner update - FIXED
+    // Create notification for owner update
     try {
       const notification = new Notification({
         userId: null,
-        type: "owner_updated", // FIXED - use valid enum value
-        target: "admin", // ADDED - required field
+        type: "owner_updated",
+        target: "admin",
         message: `Owner "${updatedOwner.name}" has been updated.`,
         relatedId: updatedOwner._id
       });
@@ -403,15 +497,28 @@ const deleteOwner = async (req, res) => {
       return res.status(404).json({ error: 'Owner not found' });
     }
 
+    // Check if owner has properties
+    const numericOwnerId = parseInt(ownerId);
+    const propertyCount = await Property.countDocuments({ ownerId: numericOwnerId });
+    
+    if (propertyCount > 0) {
+      console.log(`⚠️ Owner has ${propertyCount} properties. Consider deleting properties first.`);
+      return res.status(400).json({ 
+        error: 'Cannot delete owner with existing properties',
+        message: `This owner has ${propertyCount} properties. Please delete or reassign them first.`,
+        propertyCount
+      });
+    }
+
     await Owner.findOneAndDelete({ ownerId });
     console.log('✅ Owner deleted successfully:', ownerId);
 
-    // Create notification for deleted owner - FIXED
+    // Create notification for deleted owner
     try {
       const notification = new Notification({
         userId: null,
-        type: "owner_deleted", // FIXED - use valid enum value
-        target: "admin", // ADDED - required field
+        type: "owner_deleted",
+        target: "admin",
         message: `Owner "${owner.name}" (ID: ${owner.ownerId}) was deleted.`,
         relatedId: owner._id
       });
@@ -605,6 +712,8 @@ module.exports = {
   // Utility functions
   getPhotoStats,
   getOwnersWithoutPhotos,
+  recalculateStats,
+  recalculateAllStats,
   
   // Main CRUD operations
   addOwner,

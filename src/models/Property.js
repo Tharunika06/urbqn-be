@@ -12,14 +12,6 @@ const PropertySchema = new mongoose.Schema({
   photo: { 
     type: String // Will store: "data:image/jpeg;base64,/9j/4AAQ..."
   },
-  
-  // Photo metadata
-  // photoInfo: {
-  //   originalName: { type: String },
-  //   mimeType: { type: String },
-  //   size: { type: Number }, // Size in bytes
-  //   uploadDate: { type: Date, default: Date.now }
-  // },
 
   size: { 
     type: String,
@@ -30,9 +22,10 @@ const PropertySchema = new mongoose.Schema({
     trim: true,
     default: 'Apartment'
   },
+  // ✅ UPDATED: Added 'sold' to status enum
   status: { 
     type: String, 
-    enum: ['rent', 'sale', 'both'], 
+    enum: ['rent', 'sale', 'both', 'sold'], // Added 'sold' status
     required: true,
     lowercase: true
   },
@@ -73,6 +66,12 @@ const PropertySchema = new mongoose.Schema({
     type: String,
     trim: true 
   },
+  
+  // ✅ NEW: Track sold status
+  soldDate: { type: Date },
+  soldTo: { type: String }, // Customer name or ID
+  soldTransactionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Transaction' },
+  
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -86,6 +85,11 @@ PropertySchema.index({ createdAt: -1 });
 // Virtual to check if property has photo
 PropertySchema.virtual('hasPhoto').get(function() {
   return !!(this.photo && this.photo.startsWith('data:'));
+});
+
+// ✅ NEW: Virtual to check if property is sold
+PropertySchema.virtual('isSold').get(function() {
+  return this.status === 'sold';
 });
 
 // Virtual field to compute the display location
@@ -118,6 +122,29 @@ PropertySchema.methods.getPhotoFormat = function() {
   return match ? match[1] : null;
 };
 
+// ✅ NEW: Method to mark property as sold
+PropertySchema.methods.markAsSold = async function(transactionData) {
+  this.status = 'sold';
+  this.soldDate = new Date();
+  this.soldTo = transactionData.customerName;
+  this.soldTransactionId = transactionData.transactionId;
+  
+  await this.save();
+  
+  console.log(`✅ Property "${this.name}" marked as SOLD to ${transactionData.customerName}`);
+  return this;
+};
+
+// ✅ NEW: Static method to get all sold properties
+PropertySchema.statics.findSoldProperties = function() {
+  return this.find({ status: 'sold' }).sort({ soldDate: -1 });
+};
+
+// ✅ NEW: Static method to get all available properties (excluding sold)
+PropertySchema.statics.findAvailableProperties = function() {
+  return this.find({ status: { $in: ['rent', 'sale', 'both'] } });
+};
+
 // Pre-save middleware to validate and process data
 PropertySchema.pre('save', function(next) {
   // Validate base64 photo if provided
@@ -145,6 +172,7 @@ PropertySchema.set('toJSON', {
     
     // Add computed fields
     ret.hasPhoto = !!(ret.photo && ret.photo.startsWith('data:'));
+    ret.isSold = ret.status === 'sold';
     
     // Optionally exclude photo for list views (if query param says so)
     if (options.excludePhoto) {

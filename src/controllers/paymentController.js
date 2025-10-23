@@ -1,10 +1,82 @@
 // src/controllers/paymentController.js
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Transaction = require('../models/Transaction');
+const Property = require('../models/Property');
+const Owner = require('../models/Owner');
 const Profile = require('../models/Profile');
 const Notification = require('../models/Notification');
 const Counter = require('../models/Counter');
 const { emitNotification } = require('../utils/socketUtils');
+const PendingReview = require('../models/PendingReview');
+const Review = require('../models/Review');
+
+// ============ HELPER: UPDATE OWNER STATS AFTER TRANSACTION ============
+async function updateOwnerStatsAfterTransaction(propertyId, purchaseType) {
+  try {
+    console.log('\n📊 Updating owner stats after transaction...');
+    console.log(`🏠 Property ID: ${propertyId}`);
+    console.log(`📦 Purchase Type: ${purchaseType}`);
+
+    // Get property details
+    const property = await Property.findById(propertyId);
+    if (!property) {
+      console.error('❌ Property not found');
+      return null;
+    }
+
+    // Get owner
+    const owner = await Owner.findOne({ ownerId: property.ownerId });
+    if (!owner) {
+      console.error(`❌ Owner not found for ownerId: ${property.ownerId}`);
+      return null;
+    }
+
+    console.log(`👤 Owner: ${owner.name} (ID: ${owner.ownerId})`);
+
+    // Recalculate ALL stats from scratch based on actual properties
+    const numericOwnerId = parseInt(owner.ownerId);
+
+    const rentProperties = await Property.countDocuments({ 
+      ownerId: numericOwnerId, 
+      status: { $in: ['rent', 'both'] } 
+    });
+    
+    const saleProperties = await Property.countDocuments({ 
+      ownerId: numericOwnerId, 
+      status: { $in: ['sale', 'both'] } 
+    });
+
+    const totalProperties = await Property.countDocuments({ 
+      ownerId: numericOwnerId 
+    });
+    
+    // ✅ NEW: Count sold properties
+    const soldProperties = await Property.countDocuments({ 
+      ownerId: numericOwnerId, 
+      status: 'sold' 
+    });
+
+    // Update owner stats
+    owner.propertyRent = rentProperties;
+    owner.propertySold = saleProperties;
+    owner.propertyOwned = totalProperties;
+    owner.totalListing = rentProperties + saleProperties; // Exclude sold from listings
+
+    await owner.save();
+
+    console.log('✅ Owner stats updated:');
+    console.log(`   📊 Total Properties: ${totalProperties}`);
+    console.log(`   🏠 For Rent: ${rentProperties}`);
+    console.log(`   💰 For Sale: ${saleProperties}`);
+    console.log(`   ✅ Sold: ${soldProperties}`);
+    console.log(`   📈 Total Listings: ${owner.totalListing}`);
+
+    return owner;
+  } catch (error) {
+    console.error('❌ Error updating owner stats:', error.message);
+    return null;
+  }
+}
 
 // Helper function for sequence generation
 async function getNextSequenceValue(sequenceName) {
@@ -81,9 +153,11 @@ const createPaymentIntent = async (req, res) => {
   }
 };
 
-// UPDATED: Save transaction with purchase type
+// ✅ UPDATED: Save transaction and mark property as sold if purchaseType is 'buy'
 const saveTransaction = async (req, res) => {
-  console.log('📥 Received /save-transaction request');
+  console.log('\n' + '='.repeat(60));
+  console.log('📥 NEW TRANSACTION REQUEST');
+  console.log('='.repeat(60));
   console.log('📄 Request body:', JSON.stringify(req.body, null, 2));
 
   const { transactionDetails } = req.body;
@@ -100,7 +174,36 @@ const saveTransaction = async (req, res) => {
       });
     }
 
-    console.log(`🏠 Purchase type: ${purchaseType.toUpperCase()}`);
+    console.log(`\n🏠 Purchase Type: ${purchaseType.toUpperCase()}`);
+
+    // ✅ CHECK: Verify property exists and is available for sale
+    const property = await Property.findById(transactionDetails.property.id);
+    if (!property) {
+      return res.status(404).send({ 
+        error: 'Property not found',
+        message: 'The property you are trying to purchase does not exist.'
+      });
+    }
+
+    // ✅ CHECK: If buying, verify property is not already sold
+    if (purchaseType === 'buy') {
+      if (property.status === 'sold') {
+        console.log('❌ Property already sold!');
+        return res.status(400).send({ 
+          error: 'Property already sold',
+          message: 'This property has already been purchased and is no longer available.'
+        });
+      }
+
+      // Check if property can be sold
+      if (!['sale', 'both'].includes(property.status)) {
+        console.log('❌ Property not available for sale!');
+        return res.status(400).send({ 
+          error: 'Property not for sale',
+          message: 'This property is only available for rent.'
+        });
+      }
+    }
 
     // Fetch profile using EMAIL first, then validate phone
     const profile = await getProfileByEmailAndPhone(
@@ -149,7 +252,7 @@ const saveTransaction = async (req, res) => {
       customerEmail: customerData.customerEmail,
       customerPhoto: customerData.customerPhoto,
       amount: transactionDetails.amount,
-      purchaseType: purchaseType, // NEW: Save purchase type
+      purchaseType: purchaseType,
       property: transactionDetails.property.id,
       ownerName: transactionDetails.ownerName,
       paymentMethod: transactionDetails.paymentMethod,
@@ -157,27 +260,148 @@ const saveTransaction = async (req, res) => {
     });
 
     await newTransaction.save();
-    console.log('✅ Transaction saved to DB:', newTransaction.customTransactionId);
+    console.log('\n✅ Transaction saved to DB:', newTransaction.customTransactionId);
     console.log('🏠 Purchase type:', newTransaction.purchaseType);
+    console.log('💰 Amount: ₹', newTransaction.amount);
     console.log('📧 Customer email:', newTransaction.customerEmail || 'N/A');
     console.log('📸 Customer photo saved:', !!newTransaction.customerPhoto);
 
+    // ========== MARK PROPERTY AS SOLD IF PURCHASE TYPE IS 'BUY' ==========
+    if (purchaseType === 'buy') {
+      console.log('\n🔒 MARKING PROPERTY AS SOLD...');
+      
+      try {
+        await property.markAsSold({
+          customerName: customerData.customerName,
+          transactionId: newTransaction._id
+        });
+        
+        console.log('✅ Property successfully marked as SOLD');
+        console.log(`   Property: "${property.name}"`);
+        console.log(`   Sold to: ${customerData.customerName}`);
+        console.log(`   Transaction ID: ${customId}`);
+        console.log(`   Sold Date: ${property.soldDate}`);
+        
+        // Emit socket event for property sold
+        if (req.app && req.app.get('io')) {
+          const io = req.app.get('io');
+          io.emit('property-sold', {
+            propertyId: property._id.toString(),
+            propertyName: property.name,
+            soldTo: customerData.customerName,
+            soldDate: property.soldDate,
+            transactionId: customId
+          });
+          console.log('🔔 Property sold event emitted via socket');
+        }
+        
+      } catch (markSoldError) {
+        console.error('❌ Failed to mark property as sold:', markSoldError.message);
+        // Don't fail the transaction if this fails, but log it
+      }
+    }
+
+    // ========== CREATE PENDING REVIEW ENTRY ==========
+    try {
+      console.log('\n📝 Creating pending review entry...');
+      
+      // Check if customer already reviewed this property
+      const existingReview = await Review.findOne({
+        propertyId: transactionDetails.property.id,
+        $or: [
+          { customerPhone: customerData.customerPhone },
+          ...(customerData.customerEmail ? [{ customerEmail: customerData.customerEmail }] : [])
+        ]
+      });
+
+      if (existingReview) {
+        console.log('ℹ️ Customer already reviewed this property, skipping pending review');
+      } else {
+        // Check if customer already has a pending review for this property
+        const existingPendingReview = await PendingReview.findOne({
+          propertyId: transactionDetails.property.id,
+          customerPhone: customerData.customerPhone,
+          status: 'pending'
+        });
+
+        if (!existingPendingReview) {
+          const pendingReview = new PendingReview({
+            propertyId: transactionDetails.property.id,
+            transactionId: newTransaction._id,
+            customerEmail: customerData.customerEmail,
+            customerPhone: customerData.customerPhone,
+            customerName: customerData.customerName,
+            purchaseType: purchaseType,
+            status: 'pending'
+          });
+
+          await pendingReview.save();
+          console.log('✅ Pending review created successfully');
+          console.log(`   Customer: ${customerData.customerName}`);
+          console.log(`   Phone: ${customerData.customerPhone}`);
+          console.log(`   Property ID: ${transactionDetails.property.id}`);
+        } else {
+          console.log('ℹ️ Pending review already exists for this customer and property');
+        }
+      }
+    } catch (reviewError) {
+      console.error('⚠️ Failed to create pending review:', reviewError.message);
+      // Don't fail the transaction if pending review creation fails
+    }
+
+    // ========== UPDATE OWNER STATS AFTER TRANSACTION ==========
+    const updatedOwner = await updateOwnerStatsAfterTransaction(
+      transactionDetails.property.id,
+      purchaseType
+    );
+
+    if (updatedOwner) {
+      console.log(`\n✅ Owner stats successfully updated for: ${updatedOwner.name}`);
+    } else {
+      console.warn('\n⚠️ Warning: Owner stats could not be updated');
+    }
+
     // Save Notification in DB
     const transactionType = purchaseType === 'rent' ? 'Rental' : 'Purchase';
+    const notificationMessage = purchaseType === 'buy' 
+      ? `🏠 Property "${property.name}" SOLD! Transaction ${newTransaction.customTransactionId} - ₹${newTransaction.amount} by ${newTransaction.customerName}`
+      : `New ${transactionType} transaction ${newTransaction.customTransactionId} - ₹${newTransaction.amount} by ${newTransaction.customerName}`;
+    
     const notification = new Notification({
       userId: null,
-      type: 'transaction',
-      message: `New ${transactionType} transaction ${newTransaction.customTransactionId} - ₹${newTransaction.amount} by ${newTransaction.customerName}`,
+      type: purchaseType === 'buy' ? 'property_sold' : 'transaction',
+      message: notificationMessage,
       relatedId: newTransaction._id,
     });
     await notification.save();
 
     // Emit Socket.io notification
     if (req.app && req.app.get('io')) {
-        emitNotification(req, notification);
+      emitNotification(req, notification);
+      
+      // Emit owner stats update event
+      if (updatedOwner) {
+        const io = req.app.get('io');
+        io.emit('update-analytics', {
+          type: 'owner-stats-updated',
+          ownerId: updatedOwner.ownerId,
+          name: updatedOwner.name,
+          stats: {
+            propertyOwned: updatedOwner.propertyOwned,
+            propertyRent: updatedOwner.propertyRent,
+            propertySold: updatedOwner.propertySold,
+            totalListing: updatedOwner.totalListing
+          }
+        });
+        console.log('🔔 Owner stats update event emitted via socket');
+      }
     } else {
-        console.warn('⚠️ Socket.io instance not found. Notification not emitted via socket for saveTransaction.');
+      console.warn('⚠️ Socket.io instance not found. Notification not emitted via socket.');
     }
+
+    console.log('\n' + '='.repeat(60));
+    console.log('✅✅✅ TRANSACTION COMPLETED SUCCESSFULLY ✅✅✅');
+    console.log('='.repeat(60) + '\n');
 
     res.status(200).send({
       success: true,
@@ -185,12 +409,15 @@ const saveTransaction = async (req, res) => {
         ...newTransaction.toObject(),
         profileFound: !!profile,
         profileMatchedByEmail: !!profile,
-        hasPhoto: !!newTransaction.customerPhoto
+        hasPhoto: !!newTransaction.customerPhoto,
+        ownerStatsUpdated: !!updatedOwner,
+        propertyMarkedAsSold: purchaseType === 'buy'
       }
     });
 
   } catch (error) {
-    console.error('❌ Error saving transaction:', error);
+    console.error('\n💥 CRITICAL ERROR:', error.message);
+    console.error('Stack:', error.stack);
     const errorMessage = error.message || 'Failed to save transaction details.';
     res.status(500).send({ error: errorMessage });
   }
@@ -200,7 +427,7 @@ const saveTransaction = async (req, res) => {
 const getAllTransactions = async (req, res) => {
   try {
     const transactions = await Transaction.find()
-      .populate('property', 'name type')
+      .populate('property', 'name type status')
       .sort({ createdAt: -1 });
 
     // Add hasPhoto flag for frontend
@@ -268,7 +495,7 @@ const getMonthlyBuyers = async (req, res) => {
   }
 };
 
-// UPDATED: Get all unique customers with purchase type info
+// Get all unique customers with purchase type info
 const getAllCustomers = async (req, res) => {
   try {
     const customers = await Transaction.aggregate([
@@ -282,7 +509,6 @@ const getAllCustomers = async (req, res) => {
           lastTransaction: { $max: "$createdAt" },
           totalTransactions: { $sum: 1 },
           totalAmount: { $sum: "$amount" },
-          // NEW: Track purchase types
           purchaseTypes: { $addToSet: "$purchaseType" },
           rentTransactions: { 
             $sum: { $cond: [{ $eq: ["$purchaseType", "rent"] }, 1, 0] } 
@@ -336,7 +562,6 @@ const getAllCustomers = async (req, res) => {
           totalAmount: 1,
           averageAmount: 1,
           ownerName: 1,
-          // NEW: Include purchase type data
           purchaseTypes: 1,
           rentTransactions: 1,
           buyTransactions: 1
@@ -359,7 +584,7 @@ const getAllCustomers = async (req, res) => {
   }
 };
 
-// UPDATED: Get customer by phone with purchase type details
+// Get customer by phone with purchase type details
 const getCustomerByPhone = async (req, res) => {
   try {
     const { phone } = req.params;
@@ -382,7 +607,6 @@ const getCustomerByPhone = async (req, res) => {
     const totalTransactions = customerTransactions.length;
     const totalAmount = customerTransactions.reduce((sum, t) => sum + t.amount, 0);
     
-    // NEW: Calculate purchase type statistics
     const rentTransactions = customerTransactions.filter(t => t.purchaseType === 'rent');
     const buyTransactions = customerTransactions.filter(t => t.purchaseType === 'buy');
     const rentAmount = rentTransactions.reduce((sum, t) => sum + t.amount, 0);
@@ -415,7 +639,6 @@ const getCustomerByPhone = async (req, res) => {
       totalTransactions,
       totalAmount,
       averageAmount: Math.round(totalAmount / totalTransactions),
-      // NEW: Purchase type breakdown
       purchaseTypeStats: {
         rentCount: rentTransactions.length,
         buyCount: buyTransactions.length,
@@ -438,7 +661,7 @@ const getCustomerByPhone = async (req, res) => {
     console.log(`✅ Customer data prepared for: ${customerData.name}`);
     console.log(`📧 Email: ${customerData.email}`);
     console.log(`📸 Has photo: ${customerData.hasPhoto}`);
-    console.log(`🏠 Rent transactions: ${rentTransactions.length}, Buy transactions: ${buyTransactions.length}`);
+    console.log(`🏠 Rent: ${rentTransactions.length}, Buy: ${buyTransactions.length}`);
 
     res.status(200).json(customerData);
 
@@ -448,6 +671,7 @@ const getCustomerByPhone = async (req, res) => {
   }
 };
 
+// Delete customer and recalculate owner stats
 const deleteCustomer = async (req, res) => {
   try {
     const { phone } = req.params;
@@ -457,7 +681,7 @@ const deleteCustomer = async (req, res) => {
 
     const customerTransactions = await Transaction.find({
       customerPhone: decodedPhone
-    });
+    }).populate('property');
 
     if (customerTransactions.length === 0) {
       return res.status(404).json({ error: 'Customer not found' });
@@ -466,11 +690,25 @@ const deleteCustomer = async (req, res) => {
     const customerName = customerTransactions[0].customerName;
     const transactionCount = customerTransactions.length;
 
+    // Get unique owner IDs affected by this deletion
+    const affectedOwnerIds = [...new Set(
+      customerTransactions
+        .map(t => t.property?.ownerId)
+        .filter(Boolean)
+    )];
+
+    console.log(`🔄 Will recalculate stats for ${affectedOwnerIds.length} owners`);
+
     const deleteResult = await Transaction.deleteMany({
       customerPhone: decodedPhone
     });
 
     console.log(`✅ Deleted ${deleteResult.deletedCount} transactions for customer: ${customerName}`);
+
+    // Recalculate stats for all affected owners
+    for (const ownerId of affectedOwnerIds) {
+      await updateOwnerStatsAfterTransaction(null, null, ownerId);
+    }
 
     const notification = new Notification({
       userId: null,
@@ -481,15 +719,14 @@ const deleteCustomer = async (req, res) => {
     await notification.save();
 
     if (req.app && req.app.get('io')) {
-        emitNotification(req, notification);
-    } else {
-        console.warn('⚠️ Socket.io instance not found. Notification not emitted via socket for deleteCustomer.');
+      emitNotification(req, notification);
     }
 
     res.status(200).json({
       success: true,
       message: `Successfully deleted customer ${customerName} and ${deleteResult.deletedCount} associated transactions`,
-      deletedCount: deleteResult.deletedCount
+      deletedCount: deleteResult.deletedCount,
+      affectedOwners: affectedOwnerIds.length
     });
 
   } catch (error) {
@@ -515,7 +752,6 @@ const getCustomerStats = async (req, res) => {
           minAmount: { $min: "$amount" },
           firstTransaction: { $min: "$createdAt" },
           lastTransaction: { $max: "$createdAt" },
-          // NEW: Purchase type statistics
           rentCount: { 
             $sum: { $cond: [{ $eq: ["$purchaseType", "rent"] }, 1, 0] } 
           },
@@ -547,7 +783,6 @@ const getCustomerStats = async (req, res) => {
               unit: "day"
             }
           },
-          // NEW: Include purchase type stats
           rentCount: 1,
           buyCount: 1,
           rentAmount: 1,
@@ -568,6 +803,7 @@ const getCustomerStats = async (req, res) => {
   }
 };
 
+// Delete transaction and recalculate owner stats
 const deleteTransaction = async (req, res) => {
   try {
     const { transactionId } = req.params;
@@ -582,7 +818,7 @@ const deleteTransaction = async (req, res) => {
     }
 
     const transaction = await Transaction.findOne({ customTransactionId: transactionId })
-                                       .populate('property', 'name');
+                                       .populate('property', 'name ownerId');
 
     if (!transaction) {
       console.log(`❌ Transaction not found with customTransactionId: "${transactionId}"`);
@@ -592,9 +828,42 @@ const deleteTransaction = async (req, res) => {
       });
     }
 
+    const propertyOwnerId = transaction.property?.ownerId;
+
     await Transaction.deleteOne({ customTransactionId: transactionId });
 
     console.log(`✅ Transaction successfully deleted: "${transaction.customTransactionId}"`);
+
+    // Recalculate owner stats after transaction deletion
+    if (propertyOwnerId) {
+      console.log(`🔄 Recalculating stats for owner ID: ${propertyOwnerId}`);
+      const owner = await Owner.findOne({ ownerId: propertyOwnerId });
+      if (owner) {
+        const numericOwnerId = parseInt(owner.ownerId);
+        
+        const rentProperties = await Property.countDocuments({ 
+          ownerId: numericOwnerId, 
+          status: { $in: ['rent', 'both'] } 
+        });
+        
+        const saleProperties = await Property.countDocuments({ 
+          ownerId: numericOwnerId, 
+          status: { $in: ['sale', 'both'] } 
+        });
+
+        const totalProperties = await Property.countDocuments({ 
+          ownerId: numericOwnerId 
+        });
+
+        owner.propertyRent = rentProperties;
+        owner.propertySold = saleProperties;
+        owner.propertyOwned = totalProperties;
+        owner.totalListing = rentProperties + saleProperties;
+
+        await owner.save();
+        console.log(`✅ Owner stats recalculated for: ${owner.name}`);
+      }
+    }
 
     const notification = new Notification({
       userId: null,

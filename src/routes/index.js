@@ -1,4 +1,4 @@
-// server/src/routes/index.js (UPDATE THIS SECTION)
+// server/src/routes/index.js
 const express = require('express');
 const router = express.Router();
 const { verifyToken } = require('../middleware/authMiddleware');
@@ -173,7 +173,12 @@ router.use('/auth', require('./auth'));
 // ===== AUTHENTICATED ROUTES (Token required) =====
 router.use('/property', require('./property'));
 router.use('/favorites', require('./favorites'));
+
+// ===== REVIEWS ROUTES (UPDATED - No token required for now) =====
+// This allows the review functionality to work with temp-user-id
+// TODO: Add verifyToken middleware when real authentication is implemented
 router.use('/reviews', require('./reviews'));
+
 router.use('/profiles', require('./profileRoutes'));
 router.use('/payment', require('./transactionRoutes'));
 
@@ -222,11 +227,19 @@ router.get('/endpoints', (req, res) => {
       'POST /api/logout',
       'GET /api/property/*',
       'GET /api/favorites/*',
-      'GET /api/reviews/*',
       'GET /api/profiles/*',
       'GET /api/payment/*',
       'GET /api/notifications/mobile (requires token)',
       'GET /api/notifications/mobile/unread-count (requires token)'
+    ],
+    reviews: [
+      'POST /api/reviews',
+      'POST /api/reviews/pending',
+      'GET /api/reviews',
+      'GET /api/reviews/property/:propertyId',
+      'GET /api/reviews/pending/:propertyId/:userId',
+      'DELETE /api/reviews/:id',
+      'DELETE /api/reviews/pending/:propertyId/:userId'
     ],
     admin: [
       'GET /api/admin/*',
@@ -238,4 +251,4 @@ router.get('/endpoints', (req, res) => {
   });
 });
 
-module.exports = router;
+module.exports = router

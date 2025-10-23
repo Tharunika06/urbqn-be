@@ -1,4 +1,6 @@
+// models/Owner.js
 const mongoose = require('mongoose');
+
 const OwnerSchema = new mongoose.Schema({
   name: { 
     type: String, 
@@ -33,10 +35,10 @@ const OwnerSchema = new mongoose.Schema({
     trim: true 
   },
   
-  // Base64 photo storage - stores complete data URL - MADE OPTIONAL
+  // Base64 photo storage - stores complete data URL
   photo: { 
     type: String, // Will store: "data:image/jpeg;base64,/9j/4AAQ..."
-    required: false // Changed from true to false
+    required: false
   },
   
   // Photo metadata
@@ -69,22 +71,26 @@ const OwnerSchema = new mongoose.Schema({
     trim: true 
   },
 
-  // Property Stats
+  // Property Stats - These will be AUTO-CALCULATED from Property collection
   totalListing: { 
     type: Number, 
-    default: 0 
+    default: 0,
+    comment: 'Auto-calculated: propertyRent + propertySold'
   },
   propertySold: { 
     type: Number, 
-    default: 0 
+    default: 0,
+    comment: 'Auto-calculated: Count of properties with status "sale" or "both"'
   },
   propertyRent: { 
     type: Number, 
-    default: 0 
+    default: 0,
+    comment: 'Auto-calculated: Count of properties with status "rent" or "both"'
   },
-  propertyOwned: { // Added this field since it was referenced in controller
+  propertyOwned: { 
     type: Number, 
-    default: 0 
+    default: 0,
+    comment: 'Auto-calculated: Total count of all properties owned by this owner'
   },
 
   createdAt: { 
@@ -126,9 +132,35 @@ OwnerSchema.methods.getPhotoFormat = function() {
   return match ? match[1] : null;
 };
 
+// Method to manually recalculate property stats (utility method)
+OwnerSchema.methods.recalculatePropertyStats = async function() {
+  const Property = mongoose.model('Property');
+  
+  const rentProperties = await Property.countDocuments({ 
+    ownerId: parseInt(this.ownerId), 
+    status: { $in: ['rent', 'both'] } 
+  });
+  
+  const saleProperties = await Property.countDocuments({ 
+    ownerId: parseInt(this.ownerId), 
+    status: { $in: ['sale', 'both'] } 
+  });
+
+  const totalProperties = await Property.countDocuments({ 
+    ownerId: parseInt(this.ownerId) 
+  });
+
+  this.propertyRent = rentProperties;
+  this.propertySold = saleProperties;
+  this.propertyOwned = totalProperties;
+  this.totalListing = rentProperties + saleProperties;
+
+  return this.save();
+};
+
 // Pre-save middleware to validate and process data
 OwnerSchema.pre('save', function(next) {
-  // Validate base64 photo if provided (only if photo exists)
+  // Validate base64 photo if provided
   if (this.photo && this.photo.length > 0) {
     if (!this.photo.startsWith('data:image/')) {
       return next(new Error('Photo must be a valid base64 data URL'));
@@ -141,8 +173,8 @@ OwnerSchema.pre('save', function(next) {
     }
   }
   
-  // Auto-calculate totalListing
-  this.totalListing = (this.propertySold || 0) + (this.propertyRent || 0);
+  // NOTE: We don't auto-calculate totalListing here anymore
+  // It's calculated by the updateOwnerStats function based on actual properties
   
   next();
 });
@@ -157,7 +189,7 @@ OwnerSchema.set('toJSON', {
     // Add computed fields
     ret.hasPhoto = !!(ret.photo && ret.photo.startsWith('data:'));
     
-    // Optionally exclude photo for list views (if query param says so)
+    // Optionally exclude photo for list views
     if (options.excludePhoto) {
       delete ret.photo;
       delete ret.photoInfo;
@@ -167,7 +199,7 @@ OwnerSchema.set('toJSON', {
   }
 });
 
-// Static method to find owners without photos (for migration purposes)
+// Static method to find owners without photos
 OwnerSchema.statics.findOwnersWithoutPhotos = function() {
   return this.find({
     $or: [
@@ -192,6 +224,28 @@ OwnerSchema.statics.getPhotoStats = async function() {
     ownersWithoutPhotos: totalOwners - ownersWithPhotos,
     photoPercentage: totalOwners > 0 ? Math.round((ownersWithPhotos / totalOwners) * 100) : 0
   };
+};
+
+// Static method to recalculate ALL owner stats (for data migration/cleanup)
+OwnerSchema.statics.recalculateAllStats = async function() {
+  const owners = await this.find();
+  console.log(`🔄 Recalculating stats for ${owners.length} owners...`);
+  
+  let successCount = 0;
+  let errorCount = 0;
+
+  for (const owner of owners) {
+    try {
+      await owner.recalculatePropertyStats();
+      successCount++;
+    } catch (error) {
+      console.error(`❌ Failed to recalculate stats for owner ${owner.ownerId}:`, error.message);
+      errorCount++;
+    }
+  }
+
+  console.log(`✅ Recalculation complete: ${successCount} success, ${errorCount} errors`);
+  return { successCount, errorCount, total: owners.length };
 };
 
 module.exports = mongoose.model('Owner', OwnerSchema);

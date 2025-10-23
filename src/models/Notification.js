@@ -18,7 +18,7 @@ const notificationSchema = new mongoose.Schema(
         "transaction", "propertySale", "system", "review", "property",
         "transaction_created", "transaction_updated", "transaction_completed",
         "transaction_failed", "review_added", "review_updated", "review_deleted",
-        "Review", "Sold", "property_updated",
+        "Review", "Sold", "property_updated", "property_sold", // ✅ ADDED: property_sold
         // Mobile events
         "owner", "property_created", "House", "Villa", "Rental", 
         "Apartment", "Commercial", "Land",
