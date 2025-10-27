@@ -2,13 +2,9 @@
 const express = require("express");
 const router = express.Router();
 const reviewController = require("../controllers/reviewController");
-
-// ============= PENDING REVIEW ROUTES (Must come FIRST) =============
-// POST: Mark review as pending
 router.post("/pending", reviewController.markReviewPending);
 
 // GET: Check if customer has pending review for a property
-// Changed to use customerIdentifier (phone or email) instead of userId
 router.get("/pending/:propertyId/:customerIdentifier", reviewController.checkPendingReview);
 
 // DELETE: Remove pending review

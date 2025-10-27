@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
-const { uploadAdminPhoto } = require('../middleware/upload');
+const { uploadAdminPhoto } = require('../middleware/uploadAdminPhoto');
 
 // Get admin profile
 router.get('/profile', adminController.getProfile);
