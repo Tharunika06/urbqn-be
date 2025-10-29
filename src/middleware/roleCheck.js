@@ -1,4 +1,3 @@
-// Middleware to check if user is admin
 // src/middleware/roleCheck.js
 exports.requireAdmin = (req, res, next) => {
   if (!req.user) {

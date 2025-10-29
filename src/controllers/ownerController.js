@@ -1,6 +1,7 @@
 // src/controllers/ownerController.js
 const Owner = require('../models/Owner');
 const Property = require('../models/Property');
+const Transaction = require('../models/Transaction');
 const Counter = require('../models/Counter');
 const Notification = require('../models/Notification');
 const { emitNotification } = require('../utils/socketUtils');
@@ -15,7 +16,7 @@ async function getNextSequenceValue(sequenceName) {
   return sequenceDocument.seq;
 }
 
-// --- Helper: Recalculate Owner Stats from Properties ---
+// --- Helper: Recalculate Owner Stats from Properties and Transactions ---
 async function recalculateOwnerStats(ownerId) {
   try {
     const owner = await Owner.findOne({ ownerId });
@@ -23,29 +24,64 @@ async function recalculateOwnerStats(ownerId) {
 
     const numericOwnerId = parseInt(ownerId);
 
-    const rentProperties = await Property.countDocuments({ 
-      ownerId: numericOwnerId, 
-      status: { $in: ['rent', 'both'] } 
-    });
-    
-    const saleProperties = await Property.countDocuments({ 
-      ownerId: numericOwnerId, 
-      status: { $in: ['sale', 'both'] } 
-    });
+    // Get all sold property IDs for this owner
+    const soldProperties = await Transaction.aggregate([
+      {
+        $match: {
+          ownerId: numericOwnerId,
+          purchaseType: 'buy',
+          status: 'Completed'
+        }
+      },
+      {
+        $group: {
+          _id: '$property'
+        }
+      }
+    ]);
 
-    const totalProperties = await Property.countDocuments({ 
+    const soldPropertyIds = soldProperties.map(p => p._id);
+
+    console.log(`🏷️ Owner ${ownerId} has ${soldPropertyIds.length} sold properties`);
+
+    // Count total properties (including sold)
+    const totalPropertiesCount = await Property.countDocuments({ 
       ownerId: numericOwnerId 
     });
 
+    // Count AVAILABLE properties (excluding sold ones)
+    const availablePropertiesCount = await Property.countDocuments({ 
+      ownerId: numericOwnerId,
+      _id: { $nin: soldPropertyIds }
+    });
+
+    // Count rent properties (excluding sold ones)
+    const rentProperties = await Property.countDocuments({ 
+      ownerId: numericOwnerId, 
+      status: { $in: ['rent', 'both'] },
+      _id: { $nin: soldPropertyIds }
+    });
+    
+    // Count sale properties (excluding sold ones)
+    const saleProperties = await Property.countDocuments({ 
+      ownerId: numericOwnerId, 
+      status: { $in: ['sale', 'both'] },
+      _id: { $nin: soldPropertyIds }
+    });
+
+    // Update owner with correct stats
+    owner.propertyOwned = availablePropertiesCount; // Only available properties
     owner.propertyRent = rentProperties;
-    owner.propertySold = saleProperties;
-    owner.propertyOwned = totalProperties;
+    owner.propertySold = soldPropertyIds.length; // Number of sold properties
     owner.totalListing = rentProperties + saleProperties;
 
     await owner.save();
     
     console.log(`✅ Owner stats recalculated for ${owner.name}:`);
-    console.log(`   Total: ${totalProperties} | Rent: ${rentProperties} | Sale: ${saleProperties}`);
+    console.log(`   Total Properties Created: ${totalPropertiesCount}`);
+    console.log(`   Available Properties: ${availablePropertiesCount}`);
+    console.log(`   Sold Properties: ${soldPropertyIds.length}`);
+    console.log(`   Rent Listings: ${rentProperties} | Sale Listings: ${saleProperties}`);
 
     return owner;
   } catch (error) {
@@ -110,6 +146,21 @@ const recalculateStats = async (req, res) => {
       return res.status(404).json({ error: 'Owner not found' });
     }
 
+    // Emit socket event for real-time update
+    if (req.app && req.app.get('io')) {
+      const io = req.app.get('io');
+      io.emit('update-analytics', {
+        type: 'owner-stats-updated',
+        ownerId: owner.ownerId,
+        stats: {
+          propertyOwned: owner.propertyOwned,
+          propertyRent: owner.propertyRent,
+          propertySold: owner.propertySold,
+          totalListing: owner.totalListing
+        }
+      });
+    }
+
     res.status(200).json({
       message: 'Owner stats recalculated successfully',
       owner: {
@@ -147,6 +198,17 @@ const recalculateAllStats = async (req, res) => {
     }
 
     console.log(`✅ Recalculation complete: ${successCount} success, ${errorCount} errors`);
+
+    // Emit socket event for dashboard refresh
+    if (req.app && req.app.get('io')) {
+      const io = req.app.get('io');
+      io.emit('update-analytics', {
+        type: 'all-owners-stats-updated',
+        totalOwners: owners.length,
+        successCount,
+        errorCount
+      });
+    }
 
     res.status(200).json({
       message: 'All owner stats recalculated',
@@ -216,7 +278,7 @@ const addOwner = async (req, res) => {
     const nextOwnerId = await getNextSequenceValue('ownerId');
 
     // Create Owner with base64 photo
-    // NOTE: Property stats will be 0 initially and auto-calculated when properties are added
+    // Property stats will be 0 initially and auto-calculated when properties are added
     const newOwner = new Owner({
       name,
       ownerId: nextOwnerId.toString(),
@@ -236,7 +298,7 @@ const addOwner = async (req, res) => {
         uploadDate: new Date(),
         size: Buffer.byteLength(photo, 'utf8')
       },
-      // Stats will be auto-calculated from properties
+      // Stats start at 0
       propertySold: 0,
       propertyRent: 0,
       propertyOwned: 0,
@@ -344,7 +406,7 @@ const getOwnerById = async (req, res) => {
 
     console.log(`✅ Owner found: ${owner.name}`);
     console.log(`📸 Has photo: ${!!owner.photo}`);
-    console.log(`📊 Stats: Owned=${owner.propertyOwned}, Rent=${owner.propertyRent}, Sale=${owner.propertySold}`);
+    console.log(`📊 Stats: Owned=${owner.propertyOwned}, Rent=${owner.propertyRent}, Sold=${owner.propertySold}`);
 
     res.status(200).json({
       ...owner.toObject(),
@@ -397,7 +459,7 @@ const updateOwner = async (req, res) => {
     }
 
     // NOTE: We DO NOT update property stats manually
-    // They will be auto-calculated by the property controller
+    // They are auto-calculated by the property/transaction controllers
 
     const updateData = {
       name: name || owner.name,
@@ -725,5 +787,8 @@ module.exports = {
   // Photo-specific operations
   getOwnerPhoto,
   updateOwnerPhoto,
-  removeOwnerPhoto
+  removeOwnerPhoto,
+  
+  // Export helper for use in other controllers
+  recalculateOwnerStats
 };
