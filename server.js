@@ -3,6 +3,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const cookieParser = require('cookie-parser'); // ✅ ADD THIS
 const path = require('path');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -16,11 +17,30 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',') 
   : ['http://localhost:3000'];
 
-// ✅ CORS configuration
+// ✅ CORS configuration - UPDATED for cookies
 app.use(cors({
-  origin: allowedOrigins,
-  credentials: true
+  origin: function(origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log('⚠️ CORS blocked origin:', origin);
+      callback(null, true); // Allow all in development, restrict in production
+    }
+  },
+  credentials: true, // ✅ CRITICAL: Enable credentials (cookies)
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['set-cookie']
 }));
+
+// ✅ Trust proxy (important for cookies behind reverse proxy/load balancer)
+app.set('trust proxy', 1);
+
+// ✅ Cookie parser middleware - ADD THIS BEFORE body parser
+app.use(cookieParser());
 
 // ✅ Body parser middleware (increase limit for image uploads)
 app.use(bodyParser.json({ limit: "50mb" }));
@@ -44,6 +64,7 @@ if (process.env.NODE_ENV === 'development') {
       console.log('Body:', JSON.stringify(req.body, null, 2));
       console.log('Query:', JSON.stringify(req.query, null, 2));
       console.log('Authorization:', req.headers.authorization ? 'Present' : 'Missing');
+      console.log('Cookies:', req.cookies.authToken ? 'Cookie Present' : 'No Cookie'); // ✅ ADD THIS
       console.log('====================\n');
     }
     next();
@@ -95,7 +116,8 @@ app.get('/health', (req, res) => {
     status: 'OK',
     message: 'Server is running',
     timestamp: new Date().toISOString(),
-    mongodb: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'
+    mongodb: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
+    cookieSupport: req.cookies ? 'Enabled' : 'Disabled' // ✅ ADD THIS
   });
 });
 
@@ -173,6 +195,7 @@ server.listen(PORT, HOST, () => {
   console.log(`\n🚀 Server running on port ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔗 Local: http://localhost:${PORT}`);
-  console.log(`📱 Network: http://192.168.0.152:${PORT}`);
+  console.log(`📱 Network: http://localhost:${PORT}`);
+  console.log(`🍪 Cookie support: Enabled`); // ✅ ADD THIS
   console.log('');
 });

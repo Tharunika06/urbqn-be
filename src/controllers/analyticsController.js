@@ -1,3 +1,4 @@
+// src/controllers/analyticsController.js
 const Transaction = require("../models/Transaction");
 
 // Get monthly sales/earnings for the current year
